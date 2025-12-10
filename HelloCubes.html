@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<!-- =============== VERTEX SHADER =============== -->
+<script type="vertex" id="vs">#version 300 es
+precision mediump float;
+
+in vec3 position;
+
+uniform float u_time;
+uniform mat4 u_proj;
+uniform mat4 u_view;
+
+void main() {
+    float angle = u_time;
+    float s = sin(angle);
+    float c = cos(angle);
+
+    // --- rotação em X ---
+    mat4 rotX = mat4(
+        1.0, 0.0, 0.0, 0.0,
+        0.0,  c,   -s, 0.0,
+        0.0,  s,    c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+    
+    // --- rotação em Y ---
+    mat4 rotY = mat4(
+         c, 0.0,  s, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        -s, 0.0,  c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+
+    mat4 rot = rotY * rotX;
+
+    gl_Position = u_proj * u_view * rot * vec4(position, 1.0);
+}
+</script>
+
+<!-- =============== FRAGMENT SHADER =============== -->
+<script type="fragment" id="fs">#version 300 es
+precision mediump float;
+
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+    float r = sin(u_time*2.0)*0.5 + 0.5;
+    float g = sin(u_time*2.0+2.0)*0.5 + 0.5;
+    float b = sin(u_time*2.0+4.0)*0.5 + 0.5;
+
+    fragColor = vec4(r,g,b,1.0);
+}
+</script>
+
+<canvas id="webgl-canvas"></canvas>
+
+<script>
+// ======================================================
+// CONFIGURA WEBGL2
+// ======================================================
+const canvas = document.getElementById("webgl-canvas");
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+
+const gl = canvas.getContext("webgl2");
+if (!gl) {
+    alert("Seu navegador NÃO suporta WebGL2");
+}
+
+gl.clearColor(0,0,0,1);
+
+// ======================================================
+// CUBO
+// ======================================================
+const cube = new Float32Array([
+    // frente
+    -0.5,-0.5,0.5,   0.5,-0.5,0.5,   0.5,0.5,0.5,
+    -0.5,-0.5,0.5,   0.5,0.5,0.5,   -0.5,0.5,0.5,
+
+    // trás
+    -0.5,-0.5,-0.5,  0.5,0.5,-0.5,   0.5,-0.5,-0.5,
+    -0.5,-0.5,-0.5, -0.5,0.5,-0.5,   0.5,0.5,-0.5,
+
+    // esquerda
+    -0.5,-0.5,-0.5, -0.5,-0.5,0.5,  -0.5,0.5,0.5,
+    -0.5,-0.5,-0.5, -0.5,0.5,0.5,   -0.5,0.5,-0.5,
+
+    // direita
+     0.5,-0.5,-0.5,  0.5,0.5,0.5,    0.5,-0.5,0.5,
+     0.5,-0.5,-0.5,  0.5,0.5,-0.5,   0.5,0.5,0.5,
+
+    // cima
+    -0.5,0.5,-0.5,  -0.5,0.5,0.5,    0.5,0.5,0.5,
+    -0.5,0.5,-0.5,   0.5,0.5,0.5,    0.5,0.5,-0.5,
+
+    // baixo
+    -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5,-0.5,0.5,
+    -0.5,-0.5,-0.5,  0.5,-0.5,0.5,  -0.5,-0.5,0.5,
+]);
+
+// ======================================================
+// COMPILA SHADERS
+// ======================================================
+function compile(type, src){
+    let s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+}
+
+let vs = compile(gl.VERTEX_SHADER, document.getElementById("vs").text);
+let fs = compile(gl.FRAGMENT_SHADER, document.getElementById("fs").text);
+
+let program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(program));
+}
+
+gl.useProgram(program);
+
+// ======================================================
+// BUFFERS
+// ======================================================
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, cube, gl.STATIC_DRAW);
+
+let posLoc = gl.getAttribLocation(program, "position");
+gl.enableVertexAttribArray(posLoc);
+gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+// ======================================================
+// MATRIZES
+// ======================================================
+function perspective(fov, aspect, near, far){
+    let f = 1 / Math.tan(fov/2);
+    return new Float32Array([
+        f/aspect,0,0,0,
+        0,f,0,0,
+        0,0,(far+near)/(near-far),-1,
+        0,0,(2*far*near)/(near-far),0
+    ]);
+}
+
+function translate(x,y,z){
+    return new Float32Array([
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0,
+        x,y,z,1
+    ]);
+}
+
+let u_proj = gl.getUniformLocation(program,"u_proj");
+let u_view = gl.getUniformLocation(program,"u_view");
+let u_time = gl.getUniformLocation(program,"u_time");
+
+let proj = perspective(Math.PI/3, canvas.width/canvas.height, 0.1, 100);
+let view = translate(0,0,-3);
+
+gl.uniformMatrix4fv(u_proj,false,proj);
+gl.uniformMatrix4fv(u_view,false,view);
+
+// ======================================================
+// LOOP
+// ======================================================
+function render(now){
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+
+    gl.uniform1f(u_time, now * 0.001);
+
+    gl.drawArrays(gl.TRIANGLES, 0, cube.length/3);
+    requestAnimationFrame(render);
+}
+
+render();
+</script>
+
+</body>
+</html>
