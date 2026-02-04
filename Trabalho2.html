@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>CG Final: Controle de Transparência</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
+        canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; 
+            color: #fff; background: rgba(0,0,0,0.7); 
+            padding: 15px; border-left: 5px solid #00ff00; 
+            pointer-events: none; user-select: none;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <strong>Trabalho 1 - CG - V1</strong><br>
+    - <span style="color: #ffe600"> Mouse: Mira (Clique para travar)</span><br>
+    - <span style="color: #ff0000"> WASD: Voar | Q/E: Altura | Shift: Turbo</span><br>
+    - <span style="color: #00ff00"> 1 / 2: Ajustar Transparência (+/-)</span>
+</div>
+
+<canvas id="glCanvas"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+<script>
+/* ================= SHADERS ================= */
+const vs = `
+    attribute vec3 aPos;
+    attribute vec2 aTex;
+    attribute vec3 aNorm;
+    
+    uniform mat4 uM, uV, uP;
+    
+    varying vec2 vTex;
+    varying vec4 vWorldPos;
+    varying vec3 vNormal; 
+    varying vec4 vClipPos; 
+    
+    void main() {
+        vec4 wPos = uM * vec4(aPos, 1.0);
+        vWorldPos = wPos;
+        vTex = aTex;
+        vNormal = normalize(mat3(uM) * aNorm);
+        
+        gl_Position = uP * uV * wPos;
+        vClipPos = gl_Position; 
+    }
+`;
+
+const fs = `
+    precision mediump float;
+    
+    varying vec2 vTex;
+    varying vec4 vWorldPos; 
+    varying vec3 vNormal;
+    varying vec4 vClipPos; 
+    
+    uniform sampler2D uMainTex, uReflTex;
+    uniform vec3 uColor;
+    uniform float uClipY; 
+    uniform bool uIsVidro;
+    
+    uniform float uAlpha;     
+    uniform vec3 uViewPos; 
+
+    void main() {
+        // Clipping Plane (Requisito 5)
+        if(uClipY > -900.0 && vWorldPos.y <= uClipY) discard;
+
+        vec4 texCol = texture2D(uMainTex, vTex);
+        
+        if(uIsVidro) {
+            // 1. Estabilidade do Reflexo (Mapeamento Projetivo)
+            vec2 ndc = vClipPos.xy / vClipPos.w;
+            vec2 projUV = ndc * 0.5 + 0.5;
+            vec4 reflexo = texture2D(uReflTex, projUV);
+            
+            // --- CÁLCULO DE INTENSIDADE ---
+            
+            // A. Fator Distância (Boost de Proximidade)
+            float dist = length(uViewPos - vWorldPos.xyz);
+            float proximity = 1.0 - smoothstep(0.0, 30.0, dist); 
+            
+            // B. Fator Ângulo (Fresnel - Requisito 1)
+            vec3 viewDir = normalize(uViewPos - vWorldPos.xyz);
+            float angle = max(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0);
+            float fresnel = pow(1.0 - angle, 4.0); 
+            
+            // C. Combinação
+            float mixFactor = clamp(fresnel + (proximity * 0.6), 0.05, 0.95);
+            
+            // Textura no vidro (Requisito 4)
+            vec4 corBaseVidro = texCol * vec4(0.05, 0.1, 0.15, 1.0);
+            
+            gl_FragColor = mix(corBaseVidro, reflexo, mixFactor);
+            
+            // Transparência Controlada (Requisito 3)
+            gl_FragColor.a = uAlpha * (1.0 - fresnel * 0.5); 
+            
+        } else {
+            vec3 l = normalize(vec3(0.5, 1.0, 0.5));
+            float light = 0.4 + 0.6 * max(dot(normalize(vNormal), l), 0.0);
+            gl_FragColor = vec4(uColor * texCol.rgb * light, 1.0);
+        }
+    }
+`;
+
+const canvas = document.getElementById('glCanvas');
+const gl = canvas.getContext('webgl', { alpha: false, depth: true });
+
+const prog = gl.createProgram();
+const compile = (type, source) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, source);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+    return s;
+};
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const loc = { 
+    p: gl.getAttribLocation(prog, "aPos"), t: gl.getAttribLocation(prog, "aTex"), n: gl.getAttribLocation(prog, "aNorm"),
+    m: gl.getUniformLocation(prog, "uM"), v: gl.getUniformLocation(prog, "uV"), pr: gl.getUniformLocation(prog, "uP"),
+    uT: gl.getUniformLocation(prog, "uMainTex"), uR: gl.getUniformLocation(prog, "uReflTex"),
+    col: gl.getUniformLocation(prog, "uColor"), clip: gl.getUniformLocation(prog, "uClipY"), isV: gl.getUniformLocation(prog, "uIsVidro"),
+    alpha: gl.getUniformLocation(prog, "uAlpha"), viewPos: gl.getUniformLocation(prog, "uViewPos")
+};
+
+/* ================= GEOMETRIA ================= */
+const cubeV = new Float32Array([-1,-1,1,0,0,0,0,1, 1,-1,1,1,0,0,0,1, 1,1,1,1,1,0,0,1, -1,1,1,0,1,0,0,1, -1,-1,-1,0,0,0,0,-1, -1,1,-1,0,1,0,0,-1, 1,1,-1,1,1,0,0,-1, 1,-1,-1,1,0,0,0,-1, -1,1,-1,0,0,0,1,0, -1,1,1,0,1,0,1,0, 1,1,1,1,1,0,1,0, 1,1,-1,1,0,0,1,0, -1,-1,-1,0,0,0,-1,0, 1,-1,-1,1,0,0,-1,0, 1,-1,1,1,1,0,-1,0, -1,-1,1,0,1,0,-1,0, 1,-1,-1,0,0,1,0,0, 1,1,-1,1,0,1,0,0, 1,1,1,1,1,1,0,0, 1,-1,1,0,1,1,0,0, -1,-1,-1,0,0,-1,0,0, -1,-1,1,1,0,-1,0,0, -1,1,1,1,1,-1,0,0, -1,1,-1,0,1,-1,0,0]);
+const cubeI = new Uint16Array([0,1,2,0,2,3, 4,5,6,4,6,7, 8,9,10,8,10,11, 12,13,14,12,14,15, 16,17,18,16,18,19, 20,21,22,20,22,23]);
+const bCubeV = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bCubeV); gl.bufferData(gl.ARRAY_BUFFER, cubeV, gl.STATIC_DRAW);
+const bCubeI = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bCubeI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeI, gl.STATIC_DRAW);
+
+const planeData = new Float32Array([-1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, -1, 1, 1, 0, 1, 0, -1, 0, -1, 0, 1, 0, 1, 0]);
+const planeInd = new Uint16Array([0,1,2, 0,2,3]);
+const bPlaneV = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bPlaneV); gl.bufferData(gl.ARRAY_BUFFER, planeData, gl.STATIC_DRAW);
+const bPlaneI = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bPlaneI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeInd, gl.STATIC_DRAW);
+
+const texCheck = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texCheck);
+const pix = new Uint8Array([220,220,220,255, 100,100,100,255, 100,100,100,255, 220,220,220,255]);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, pix);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+const fb = gl.createFramebuffer(); 
+const texRefl = gl.createTexture(); 
+const rb = gl.createRenderbuffer();
+function resizeFB() {
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+    gl.bindTexture(gl.TEXTURE_2D, texRefl);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, canvas.width, canvas.height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texRefl, 0); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+}
+
+let camera = { pos: vec3.fromValues(0, 5, 15), front: vec3.fromValues(0, 0, -1), up: vec3.fromValues(0, 1, 0), right: vec3.create(), worldUp: vec3.fromValues(0, 1, 0), yaw: -90, pitch: -10, speed: 10.0, sensitivity: 0.1 };
+const keys = {}; let lastTime = 0; 
+let glassAlpha = 0.85; // Valor inicial da transparência
+
+window.onkeydown = e => keys[e.code] = true; window.onkeyup = e => keys[e.code] = false;
+canvas.onclick = () => { if(!document.pointerLockElement) canvas.requestPointerLock(); }; 
+window.onmousemove = e => { if(document.pointerLockElement){ camera.yaw += e.movementX * camera.sensitivity; camera.pitch -= e.movementY * camera.sensitivity; if (camera.pitch > 89.0) camera.pitch = 89.0; if (camera.pitch < -89.0) camera.pitch = -89.0; updateCameraVectors(); } };
+function updateCameraVectors() { let front = vec3.create(); front[0] = Math.cos(glMatrix.toRadian(camera.yaw)) * Math.cos(glMatrix.toRadian(camera.pitch)); front[1] = Math.sin(glMatrix.toRadian(camera.pitch)); front[2] = Math.sin(glMatrix.toRadian(camera.yaw)) * Math.cos(glMatrix.toRadian(camera.pitch)); vec3.normalize(camera.front, front); vec3.cross(camera.right, camera.front, camera.worldUp); vec3.normalize(camera.right, camera.right); vec3.cross(camera.up, camera.right, camera.front); vec3.normalize(camera.up, camera.up); }
+
+// --- CONTROLES DE INPUT (Incluindo Transparência) ---
+function processInput(dt) { 
+    let v = camera.speed * dt; if (keys['ShiftLeft']) v *= 2.0; 
+    
+    // Movimento
+    if(keys['KeyW']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.front, v); 
+    if(keys['KeyS']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.front, -v); 
+    if(keys['KeyA']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.right, -v); 
+    if(keys['KeyD']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.right, v); 
+    if(keys['KeyQ']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.worldUp, v); 
+    if(keys['KeyE']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.worldUp, -v); 
+    
+    // Controle de Transparência (Teclas 1 e 2)
+    if(keys['Digit1']) glassAlpha = Math.max(glassAlpha - dt * 0.5, 0.0); // Diminui
+    if(keys['Digit2']) glassAlpha = Math.min(glassAlpha + dt * 0.5, 1.0); // Aumenta
+}
+updateCameraVectors();
+
+function drawMesh(m, col, type, isVidro) {
+    gl.uniformMatrix4fv(loc.m, false, m); gl.uniform3fv(loc.col, col); gl.uniform1i(loc.isV, isVidro);
+    if (type === 'cube') { gl.bindBuffer(gl.ARRAY_BUFFER, bCubeV); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 32, 0); gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.t, 2, gl.FLOAT, false, 32, 12); gl.enableVertexAttribArray(loc.t); gl.vertexAttribPointer(loc.n, 3, gl.FLOAT, false, 32, 20); gl.enableVertexAttribArray(loc.n); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bCubeI); gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0); } else { gl.bindBuffer(gl.ARRAY_BUFFER, bPlaneV); gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 32, 0); gl.enableVertexAttribArray(loc.p); gl.vertexAttribPointer(loc.t, 2, gl.FLOAT, false, 32, 12); gl.enableVertexAttribArray(loc.t); gl.vertexAttribPointer(loc.n, 3, gl.FLOAT, false, 32, 20); gl.enableVertexAttribArray(loc.n); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bPlaneI); gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0); }
+}
+
+function renderScene(isRefl) {
+    let m = mat4.create(); let time = performance.now() / 1000;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texCheck); gl.uniform1i(loc.uT, 0);
+    gl.uniform1f(loc.clip, isRefl ? 0.0 : -999.0);
+
+    mat4.fromTranslation(m, [0, 3, 0]); mat4.rotateY(m, m, time); mat4.rotateX(m, m, time * 0.5); drawMesh(m, [1.0, 0.2, 0.2], 'cube', false);
+    mat4.fromTranslation(m, [3, -3, -2]); mat4.rotateY(m, m, time * 0.3); drawMesh(m, [0.0, 0.2, 1.0], 'cube', false);
+
+    // 3. CHÃO (Vidro)
+    mat4.identity(m); mat4.scale(m, m, [30, 1, 30]); 
+    if(!isRefl) {
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); 
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texRefl); gl.uniform1i(loc.uR, 1);
+    }
+    drawMesh(m, [1,1,1], 'plane', true);
+    if(!isRefl) { gl.depthMask(true); gl.disable(gl.BLEND); }
+}
+
+function loop(now) {
+    let dt = (now - lastTime) / 1000; lastTime = now; processInput(dt);
+    let p = mat4.create(); mat4.perspective(p, 45*Math.PI/180, canvas.width/canvas.height, 0.1, 200);
+    gl.uniformMatrix4fv(loc.pr, false, p); gl.enable(gl.DEPTH_TEST);
+    
+    // Atualiza Uniforms
+    gl.uniform3fv(loc.viewPos, camera.pos);
+    gl.uniform1f(loc.alpha, glassAlpha); // Envia a transparência atualizada
+
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, null);
+
+    // 1. Reflexo
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0,0,canvas.width, canvas.height);
+    gl.clearColor(0.0, 0.0, 0.0, 1.0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    let vRefl = mat4.create(), target = vec3.create(); vec3.add(target, camera.pos, camera.front);
+    let rPos = vec3.fromValues(camera.pos[0], -camera.pos[1], camera.pos[2]); 
+    let rTar = vec3.fromValues(target[0], -target[1], target[2]);             
+    let rUp  = vec3.fromValues(camera.up[0], -camera.up[1], camera.up[2]);    
+    mat4.lookAt(vRefl, rPos, rTar, rUp);
+    gl.uniformMatrix4fv(loc.v, false, vRefl);
+    gl.uniform3fv(loc.viewPos, rPos);
+    gl.cullFace(gl.FRONT); gl.enable(gl.CULL_FACE); renderScene(true); gl.disable(gl.CULL_FACE);
+
+    // 2. Cena
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0,0,canvas.width, canvas.height);
+    gl.clearColor(0.05, 0.05, 0.05, 1.0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    let vMain = mat4.create(); mat4.lookAt(vMain, camera.pos, target, camera.up);
+    gl.uniformMatrix4fv(loc.v, false, vMain);
+    gl.uniform3fv(loc.viewPos, camera.pos);
+    renderScene(false);
+
+    requestAnimationFrame(loop);
+}
+
+window.onload = () => { resizeFB(); requestAnimationFrame(loop); };
+window.onresize = () => { resizeFB(); };
+</script>
+</body>
+</html>
