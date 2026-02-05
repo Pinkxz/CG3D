@@ -2,7 +2,7 @@
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>CG Final: Controle de Transparência</title>
+    <title>CG Final: Controle de Transparência e Texturas</title>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
         canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
@@ -18,10 +18,11 @@
 <body>
 
 <div id="ui">
-    <strong>Trabalho 1 - CG - V1</strong><br>
+    <strong>Trabalho 1 - CG - V2</strong><br>
     - <span style="color: #ffe600"> Mouse: Mira (Clique para travar)</span><br>
     - <span style="color: #ff0000"> WASD: Voar | Q/E: Altura | Shift: Turbo</span><br>
-    - <span style="color: #00ff00"> 1 / 2: Ajustar Transparência (+/-)</span>
+    - <span style="color: #00ff00"> 1 / 2: Ajustar Transparência (+/-)</span><br>
+    - <span style="color: #00ffff"> T: Alternar Texturas (Img/Cor)</span>
 </div>
 
 <canvas id="glCanvas"></canvas>
@@ -145,10 +146,37 @@ const planeInd = new Uint16Array([0,1,2, 0,2,3]);
 const bPlaneV = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bPlaneV); gl.bufferData(gl.ARRAY_BUFFER, planeData, gl.STATIC_DRAW);
 const bPlaneI = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bPlaneI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeInd, gl.STATIC_DRAW);
 
+/* ================= TEXTURAS ================= */
+// 1. Textura Padrão
 const texCheck = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texCheck);
 const pix = new Uint8Array([220,220,220,255, 100,100,100,255, 100,100,100,255, 220,220,220,255]);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, pix);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+// 2. Texturas Externas
+function loadTexture(url) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // Placeholder
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255,255,255,255]));
+    
+    const img = new Image();
+    img.onload = () => {
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    };
+    img.src = url;
+    return tex;
+}
+
+const texCubo1 = loadTexture("cubo1.png");
+const texCubo2 = loadTexture("cubo2.png");
+let useExternalTextures = false;
 
 const fb = gl.createFramebuffer(); 
 const texRefl = gl.createTexture(); 
@@ -165,14 +193,19 @@ function resizeFB() {
 
 let camera = { pos: vec3.fromValues(0, 5, 15), front: vec3.fromValues(0, 0, -1), up: vec3.fromValues(0, 1, 0), right: vec3.create(), worldUp: vec3.fromValues(0, 1, 0), yaw: -90, pitch: -10, speed: 10.0, sensitivity: 0.1 };
 const keys = {}; let lastTime = 0; 
-let glassAlpha = 0.85; // Valor inicial da transparência
+let glassAlpha = 0.85; 
 
-window.onkeydown = e => keys[e.code] = true; window.onkeyup = e => keys[e.code] = false;
+window.onkeydown = e => {
+    keys[e.code] = true;
+    if (e.code === 'KeyT') useExternalTextures = !useExternalTextures;
+};
+window.onkeyup = e => keys[e.code] = false;
+
 canvas.onclick = () => { if(!document.pointerLockElement) canvas.requestPointerLock(); }; 
 window.onmousemove = e => { if(document.pointerLockElement){ camera.yaw += e.movementX * camera.sensitivity; camera.pitch -= e.movementY * camera.sensitivity; if (camera.pitch > 89.0) camera.pitch = 89.0; if (camera.pitch < -89.0) camera.pitch = -89.0; updateCameraVectors(); } };
 function updateCameraVectors() { let front = vec3.create(); front[0] = Math.cos(glMatrix.toRadian(camera.yaw)) * Math.cos(glMatrix.toRadian(camera.pitch)); front[1] = Math.sin(glMatrix.toRadian(camera.pitch)); front[2] = Math.sin(glMatrix.toRadian(camera.yaw)) * Math.cos(glMatrix.toRadian(camera.pitch)); vec3.normalize(camera.front, front); vec3.cross(camera.right, camera.front, camera.worldUp); vec3.normalize(camera.right, camera.right); vec3.cross(camera.up, camera.right, camera.front); vec3.normalize(camera.up, camera.up); }
 
-// --- CONTROLES DE INPUT (Incluindo Transparência) ---
+// --- CONTROLES DE INPUT ---
 function processInput(dt) { 
     let v = camera.speed * dt; if (keys['ShiftLeft']) v *= 2.0; 
     
@@ -184,9 +217,9 @@ function processInput(dt) {
     if(keys['KeyQ']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.worldUp, v); 
     if(keys['KeyE']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.worldUp, -v); 
     
-    // Controle de Transparência (Teclas 1 e 2)
-    if(keys['Digit1']) glassAlpha = Math.max(glassAlpha - dt * 0.5, 0.0); // Diminui
-    if(keys['Digit2']) glassAlpha = Math.min(glassAlpha + dt * 0.5, 1.0); // Aumenta
+    // Controle de Transparência
+    if(keys['Digit1']) glassAlpha = Math.max(glassAlpha - dt * 0.5, 0.0); 
+    if(keys['Digit2']) glassAlpha = Math.min(glassAlpha + dt * 0.5, 1.0); 
 }
 updateCameraVectors();
 
@@ -197,13 +230,37 @@ function drawMesh(m, col, type, isVidro) {
 
 function renderScene(isRefl) {
     let m = mat4.create(); let time = performance.now() / 1000;
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texCheck); gl.uniform1i(loc.uT, 0);
+    
+    // Configurar texturas
+    gl.activeTexture(gl.TEXTURE0); 
+    if (!useExternalTextures) gl.bindTexture(gl.TEXTURE_2D, texCheck);
+
+    gl.uniform1i(loc.uT, 0);
     gl.uniform1f(loc.clip, isRefl ? 0.0 : -999.0);
 
-    mat4.fromTranslation(m, [0, 3, 0]); mat4.rotateY(m, m, time); mat4.rotateX(m, m, time * 0.5); drawMesh(m, [1.0, 0.2, 0.2], 'cube', false);
-    mat4.fromTranslation(m, [3, -3, -2]); mat4.rotateY(m, m, time * 0.3); drawMesh(m, [0.0, 0.2, 1.0], 'cube', false);
+    // 1. CUBO 1
+    mat4.fromTranslation(m, [0, 3, 0]); mat4.rotateY(m, m, time); mat4.rotateX(m, m, time * 0.5); 
+    if(useExternalTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texCubo1);
+        drawMesh(m, [1.0, 1.0, 1.0], 'cube', false); 
+    } else {
+        gl.bindTexture(gl.TEXTURE_2D, texCheck);
+        drawMesh(m, [1.0, 0.2, 0.2], 'cube', false); 
+    }
 
-    // 3. CHÃO (Vidro)
+    // 2. CUBO 2 
+    mat4.fromTranslation(m, [3, -3, -2]); mat4.rotateY(m, m, time * 0.3); 
+    if(useExternalTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texCubo2);
+        drawMesh(m, [1.0, 1.0, 1.0], 'cube', false); 
+    } else {
+        gl.bindTexture(gl.TEXTURE_2D, texCheck);
+        drawMesh(m, [0.0, 0.2, 1.0], 'cube', false);
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, texCheck);
+
+    // 3. CHÃO
     mat4.identity(m); mat4.scale(m, m, [30, 1, 30]); 
     if(!isRefl) {
         gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); 
@@ -220,7 +277,7 @@ function loop(now) {
     
     // Atualiza Uniforms
     gl.uniform3fv(loc.viewPos, camera.pos);
-    gl.uniform1f(loc.alpha, glassAlpha); // Envia a transparência atualizada
+    gl.uniform1f(loc.alpha, glassAlpha); 
 
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, null);
 
