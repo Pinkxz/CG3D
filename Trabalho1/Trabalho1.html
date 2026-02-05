@@ -207,7 +207,7 @@ function updateCameraVectors() { let front = vec3.create(); front[0] = Math.cos(
 
 // --- CONTROLES DE INPUT ---
 function processInput(dt) { 
-    let v = camera.speed * dt; if (keys['ShiftLeft']) v *= 2.0; 
+    let v = camera.speed * dt; if (keys['ShiftLeft']) v *= 4.0; 
     
     // Movimento
     if(keys['KeyW']) vec3.scaleAndAdd(camera.pos, camera.pos, camera.front, v); 
@@ -303,7 +303,7 @@ function loop(now) {
 
     requestAnimationFrame(loop);
 }
-
+// O cubo se mexe mas eu não queria não. Na realidade, eu queria que ele apenas se distorcesse com o ângulo de visão, mas não consegui implementar direito.
 window.onload = () => { resizeFB(); requestAnimationFrame(loop); };
 window.onresize = () => { resizeFB(); };
 </script>
